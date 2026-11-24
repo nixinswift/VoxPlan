@@ -51,6 +51,7 @@ export interface CostPlan {
   /** Who approved the proposal for the bid and when; cleared whenever approval is revoked. */
   approvedBy?: string;
   approvedAt?: string;
+  approvedBasis?: string;
 }
 
 export interface CostTakeoff {
@@ -90,7 +91,8 @@ export function pricePlan(plan: CostPlan, shift: number, today: string) {
     const quote = rankQuotes(line.quotes, effort.hours, today)[0];
     const cost = quote?.total ?? effort.hours * positive(line.rate);
     return { ...effort, trade: line.description, workerDays: shift > 0 ? effort.hours / shift : 0,
-      tasks: 1, rate: quote?.rate ?? line.rate, cost, quoted: Boolean(quote), priced: Boolean(quote) || line.rate > 0 };
+      tasks: 1, rate: quote?.rate ?? line.rate, cost, quoteId: quote?.id,
+      quoted: Boolean(quote), priced: Boolean(quote) || line.rate > 0 };
   });
   const equipment = plan.equipment.map(line => {
     const days = positive(line.days) * positive(line.units);
@@ -99,8 +101,30 @@ export function pricePlan(plan: CostPlan, shift: number, today: string) {
     const quote = rankQuotes(line.quotes, quantity, today)[0];
     return { key: line.name, days, hours, tasks: 1, unit: line.basis,
       rate: quote?.rate ?? line.rate, cost: quote?.total ?? quantity * positive(line.rate) + positive(line.extras),
-      quoted: Boolean(quote), priced: Boolean(quote) || line.rate > 0 };
+      quoteId: quote?.id, quoted: Boolean(quote), priced: Boolean(quote) || line.rate > 0 };
   });
-  return { labour, equipment, complete: labour.every(l => l.priced && l.hours > 0) && equipment.every(e => e.priced && e.days > 0),
+  return { labour, equipment, complete: labour.length + equipment.length > 0 &&
+    labour.every(l => l.priced && l.hours > 0) && equipment.every(e => e.priced && e.days > 0),
     labourTotal: labour.reduce((sum, l) => sum + l.cost, 0), equipmentTotal: equipment.reduce((sum, e) => sum + e.cost, 0) };
+}
+
+/** The selected quote matters even when its replacement price is numerically equal. */
+export function costApprovalBasis(inputBasis: string, prices: ReturnType<typeof pricePlan>) {
+  return JSON.stringify([inputBasis,
+    prices.labour.map(line => [line.hours, line.rate, line.cost, line.quoteId]),
+    prices.equipment.map(line => [line.days, line.hours, line.unit, line.rate, line.cost, line.quoteId]),
+  ]);
+}
+
+export function approvalApplies(plan: CostPlan, currentBasis: string, complete: boolean) {
+  return plan.useInBid && complete && Boolean(plan.approvedBy && plan.approvedAt && plan.approvedBasis === currentBasis);
+}
+
+export function commercialTotals(parts: {
+  labour: number; equipment: number; materials: number; fuel: number;
+}, overheadPct: number, profitPct: number) {
+  const directTotal = parts.labour + parts.equipment + parts.materials + parts.fuel;
+  const overhead = directTotal * (overheadPct / 100);
+  const profit = (directTotal + overhead) * (profitPct / 100);
+  return { directTotal, overhead, profit, grandTotal: directTotal + overhead + profit };
 }

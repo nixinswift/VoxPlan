@@ -38,9 +38,18 @@ function Quotes({ quotes, quantity, basis, onChange }: { quotes: CostQuote[]; qu
   </details>;
 }
 
-interface Props { projectId: string; activePackage: string; takeoff: CostTakeoff[]; hoursPerDay: number; plan: CostPlan | null; onChange: (plan: CostPlan | null) => void }
+interface Props {
+  projectId: string;
+  activePackage: string;
+  takeoff: CostTakeoff[];
+  hoursPerDay: number;
+  plan: CostPlan | null;
+  approvalBasis: string;
+  approvalSaved: boolean;
+  onChange: (plan: CostPlan | null, saved: boolean) => void;
+}
 
-export function DrawingCostPlanner({ projectId, activePackage, takeoff, hoursPerDay, plan, onChange }: Props) {
+export function DrawingCostPlanner({ projectId, activePackage, takeoff, hoursPerDay, plan, approvalBasis, approvalSaved, onChange }: Props) {
   const [busy, setBusy] = useState(false);
   const [completed, setCompleted] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -50,18 +59,19 @@ export function DrawingCostPlanner({ projectId, activePackage, takeoff, hoursPer
   const [dirty, setDirty] = useState(false);
   const fingerprint = takeoffFingerprint(takeoff);
   const stale = Boolean(plan && plan.fingerprint !== fingerprint);
+  const approvalStale = Boolean(plan?.useInBid && plan.approvedBasis !== approvalBasis);
   const priced = plan ? pricePlan(plan, hoursPerDay, new Date().toISOString().slice(0, 10)) : null;
 
   useEffect(() => {
     let cancelled = false;
-    setLoaded(false); setDirty(false); onChange(null);
+    setLoaded(false); setDirty(false); onChange(null, false);
     supabase.from("project_cost_proposals").select("proposal,package").eq("project_id", projectId).maybeSingle().then(({ data, error }) => {
       if (cancelled) return;
       if (error) toast({ title: "Couldn't load cost proposal", description: error.message, variant: "destructive" });
       if (data?.package === activePackage) {
         const saved = data.proposal as unknown as CostPlan;
         if (Array.isArray(saved.labour) && Array.isArray(saved.equipment)) {
-          onChange(saved); setContext(saved.context || ""); setTargetDays(saved.targetDays || 20);
+          onChange(saved, true); setContext(saved.context || ""); setTargetDays(saved.targetDays || 20);
         }
       }
       setLoaded(true);
@@ -70,7 +80,10 @@ export function DrawingCostPlanner({ projectId, activePackage, takeoff, hoursPer
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, activePackage]);
 
-  const change = (next: CostPlan) => { onChange(next); setDirty(true); };
+  const change = (next: CostPlan) => {
+    onChange(next.useInBid ? next : { ...next, approvedBy: undefined, approvedAt: undefined, approvedBasis: undefined }, false);
+    setDirty(true);
+  };
   const generate = async () => {
     if (dirty && !window.confirm("Replace your unsaved proposal edits?")) return;
     setBusy(true);
@@ -96,27 +109,38 @@ export function DrawingCostPlanner({ projectId, activePackage, takeoff, hoursPer
   const save = async () => {
     if (!plan) return;
     setSaving(true);
-    const { error } = await supabase.from("project_cost_proposals").upsert({ project_id: projectId, package: activePackage, proposal: plan as unknown as Json, updated_at: new Date().toISOString() });
+    const readyToApprove = plan.useInBid && !stale && !approvalStale && priced?.complete;
+    const toSave = readyToApprove ? plan
+      : { ...plan, useInBid: false, approvedBy: undefined, approvedAt: undefined, approvedBasis: undefined };
+    const { data, error } = await supabase.from("project_cost_proposals")
+      .upsert({ project_id: projectId, package: activePackage, proposal: toSave as unknown as Json, updated_at: new Date().toISOString() })
+      .select("proposal").maybeSingle();
     setSaving(false);
-    if (error) toast({ title: "Couldn't save proposal", description: error.message, variant: "destructive" });
-    else { setDirty(false); toast({ title: "Cost proposal saved" }); }
+    if (error || !data) {
+      toast({ title: "Couldn't save proposal", description: error?.message ?? "No saved proposal was returned.", variant: "destructive" });
+    } else {
+      onChange(data.proposal as unknown as CostPlan, true);
+      setDirty(false);
+      toast({ title: "Cost proposal saved" });
+    }
   };
   return <section className="space-y-4 border-y py-6">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <h2 className="text-lg font-semibold flex items-start gap-2 min-w-0"><Calculator className="h-5 w-5 shrink-0 text-primary" /><span className="min-w-0 break-words">Drawing-based crew & equipment proposal</span></h2>
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" disabled={!plan || saving || !loaded || busy} onClick={save}>{saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}Save proposal{dirty ? " *" : ""}</Button>
-        <Button disabled={busy || !loaded || !takeoff.length || hoursPerDay <= 0 || targetDays <= 0} onClick={generate}>{busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Calculator className="h-4 w-4 mr-2" />}{busy ? "VoxPlan is planning…" : plan ? "Regenerate proposal" : "Prepare cost proposal"}</Button>
+        <Button disabled={busy || saving || !loaded || !takeoff.length || hoursPerDay <= 0 || targetDays <= 0} onClick={generate}>{busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Calculator className="h-4 w-4 mr-2" />}{busy ? "VoxPlan is planning…" : plan ? "Regenerate proposal" : "Prepare cost proposal"}</Button>
       </div>
     </div>
     <div className="grid grid-cols-1 md:grid-cols-[1fr_180px] gap-4">
-      <label className="text-sm">Site conditions & installation scope<Textarea aria-label="Cost planning conditions" placeholder="Location, pipe class/diameters, shop vs site fabrication, elevation/access, shutdown windows, available crews and equipment…" value={context} onChange={e => { setContext(e.target.value); if (plan) change({ ...plan, context: e.target.value, useInBid: false }); }} /></label>
-      <label className="text-sm">Target working days<Input aria-label="Target working days" type="number" min={1} max={10000} value={targetDays} onChange={e => { const value = Math.floor(numeric(e.target.value)); setTargetDays(value); if (plan) change({ ...plan, targetDays: value, useInBid: false }); }} /></label>
+      <label className="text-sm">Site conditions & installation scope<Textarea aria-label="Cost planning conditions" disabled={saving} placeholder="Location, pipe class/diameters, shop vs site fabrication, elevation/access, shutdown windows, available crews and equipment…" value={context} onChange={e => { setContext(e.target.value); if (plan) change({ ...plan, context: e.target.value, useInBid: false }); }} /></label>
+      <label className="text-sm">Target working days<Input aria-label="Target working days" disabled={saving} type="number" min={1} max={10000} value={targetDays} onChange={e => { const value = Math.floor(numeric(e.target.value)); setTargetDays(value); if (plan) change({ ...plan, targetDays: value, useInBid: false }); }} /></label>
     </div>
     <p className="text-xs text-muted-foreground">Basis: {takeoff.length} saved takeoff lines · {hoursPerDay} hours/shift · CAD. Productivity and equipment are provisional; rates are not live market prices. Lowest comparable quote is not a guaranteed lowest-market price.</p>
     {busy && <p role="status" className="text-sm text-muted-foreground">VoxPlan is planning in smaller groups: {Math.min(completed, takeoff.length)} / {takeoff.length} lines completed.</p>}
     {stale && <p role="alert" className="text-sm text-destructive">The takeoff changed. Regenerate this proposal before using it in your bid.</p>}
-    {plan && <>
+    {approvalStale && <p role="alert" className="text-sm text-destructive">Schedule, cost inputs or quote selection changed since approval. Review and save a new approval.</p>}
+    {plan && <fieldset disabled={saving} className="space-y-4">
       <div className="flex flex-wrap gap-6 border-b pb-3 text-sm"><span>Proposed labour: <strong>{money(priced?.labourTotal ?? 0)}</strong></span><span>Proposed equipment: <strong>{money(priced?.equipmentTotal ?? 0)}</strong></span><span className="text-muted-foreground">{priced?.complete ? "Priced allowances — review required" : "Incomplete pricing / productivity"}</span></div>
       <h3 className="font-semibold">Labour productivity & crew</h3>
       {plan.labour.map((line, index) => {
@@ -159,16 +183,15 @@ export function DrawingCostPlanner({ projectId, activePackage, takeoff, hoursPer
         <div><h4 className="font-semibold mb-2">Missing evidence & confirmations</h4><ul className="list-disc pl-4 space-y-1">{plan.uncertainties.map((s, i) => <li key={i}>{s}</li>)}</ul></div>
         <div><h4 className="font-semibold mb-2">Exclusions</h4><ul className="list-disc pl-4 space-y-1">{plan.exclusions.map((s, i) => <li key={i}>{s}</li>)}</ul></div>
       </div>
-      <label className="flex items-start gap-3 border-t pt-4 text-sm"><Checkbox aria-label="Use reviewed proposal in bid" checked={plan.useInBid && !stale && Boolean(priced?.complete)} disabled={stale || !priced?.complete} onCheckedChange={async v => {
-        if (v === true) {
-          const { data: { user } } = await supabase.auth.getUser();
-          change({ ...plan, useInBid: true, approvedBy: user?.email || user?.id || "unknown", approvedAt: new Date().toISOString() });
-        } else {
-          change({ ...plan, useInBid: false, approvedBy: undefined, approvedAt: undefined });
-        }
-      }} /><span>I reviewed productivity, rates, scope and equipment requirements. Use this proposal <strong>instead of</strong> schedule labour/equipment in the bid.</span></label>
-      {plan.useInBid && plan.approvedBy && <p className="text-xs text-muted-foreground">Approved for bid by {plan.approvedBy} on {new Date(plan.approvedAt || "").toLocaleString("en-CA")}. Any edit to this proposal revokes the approval.</p>}
+      <label className="flex items-start gap-3 border-t pt-4 text-sm">
+        <Checkbox aria-label="Use reviewed proposal in bid" checked={plan.useInBid && !stale && !approvalStale && Boolean(priced?.complete)}
+          disabled={saving || stale || !priced?.complete} onCheckedChange={v => {
+            change({ ...plan, useInBid: v === true, approvedBasis: v === true ? approvalBasis : undefined });
+          }} />
+        <span>I reviewed productivity, rates, scope and equipment requirements. Save the approval to use these allowances in the estimate.</span>
+      </label>
+      {approvalSaved && plan.useInBid && !approvalStale && plan.approvedBy && <p className="text-xs text-muted-foreground">Approval recorded for {plan.approvedBy} on {new Date(plan.approvedAt || "").toLocaleString("en-CA")}.</p>}
       <p className="text-xs text-muted-foreground">Schedule activities remain unchanged. Material costs remain separate. Quotes include only the extras entered; confirm payroll burden, overtime, travel, operators, fuel, rental minimums and taxes.</p>
-    </>}
+    </fieldset>}
   </section>;
 }

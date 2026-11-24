@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { parseEquipment } from "@/lib/scheduleEngine";
+import { equipmentUnitDays } from "@/lib/scheduleMetrics";
+import { civilTakeoffUnit } from "../../supabase/functions/_shared/civil-volume";
 import * as XLSX from "xlsx";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,7 +14,10 @@ import { tradeLabels as buildingTradeLabels, type BuildingTrade } from "@/compon
 import { CostProposalExport } from "@/components/CostProposalExport";
 import { DrawingCostPlanner } from "@/components/DrawingCostPlanner";
 import { concreteVolumeM3, cubicMetresToYards } from "@/lib/concreteQuantities";
-import { pricePlan, takeoffFingerprint, type CostPlan } from "@/lib/costPlanning";
+import { approvalApplies, commercialTotals, costApprovalBasis, pricePlan, takeoffFingerprint, type CostPlan } from "@/lib/costPlanning";
+import { useProjectFuelPlan } from "@/hooks/useProjectFuelPlan";
+import { useProjectHolidays } from "@/hooks/useProjectHolidays";
+import { emptyFuelPlan, fuelExportRows, projectFuelSummary } from "@/lib/projectFuel";
 import { costExportNumber } from "@/lib/costExportNumbers";
 
 
@@ -31,6 +35,7 @@ interface TaskRow {
   trade: string;
   manpower: number;
   duration: number;
+  start_date: string;
   equipment: string | null;
 }
 
@@ -81,8 +86,6 @@ const DEFAULT_LABOUR_RATES: Record<string, number> = {
   operator: 65,
 };
 
-const DEFAULT_EQUIPMENT_RATE = 95;
-
 const humanize = (s: string) =>
   s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
 
@@ -114,13 +117,16 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
   const [overheadPct, setOverheadPct] = useState(10);
   const [profitPct, setProfitPct] = useState(10);
   const [costPlan, setCostPlan] = useState<CostPlan | null>(null);
+  const [costApprovalSaved, setCostApprovalSaved] = useState(false);
   const loadVersion = useRef(0);
+  const savedFuel = useProjectFuelPlan(projectId);
+  const fuelCalendar = useProjectHolidays(projectId);
 
   const load = async () => {
     const version = ++loadVersion.current;
     setLoading(true);
     const [tasksRes, estRes, ratesRes, settingsRes, rotationRes] = await Promise.all([
-      supabase.from("tasks").select("id,name,trade,manpower,duration,equipment").eq("project_id", projectId),
+      supabase.from("tasks").select("id,name,trade,manpower,duration,equipment,start_date").eq("project_id", projectId),
       supabase.from("estimates").select("*").eq("project_id", projectId),
       supabase.from("project_cost_rates").select("kind,key,rate,rate_unit").eq("project_id", projectId),
       supabase.from("project_cost_settings").select("*").eq("project_id", projectId).maybeSingle(),
@@ -207,25 +213,12 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
 
   // ---- Equipment from schedule ----
   const scheduleEquipmentLines = useMemo(() => {
-    const map = new Map<string, { key: string; days: number; tasks: number }>();
-    for (const t of tasks) {
-      const raw = (t.equipment || "").trim();
-      if (!raw || /^(none|n\/a|na)$/i.test(raw)) continue;
-      for (const piece of parseEquipment(raw)) {
-        const name = piece.trim();
-        if (!name) continue;
-        const key = name.toLowerCase();
-        const cur = map.get(key) || { key, days: 0, tasks: 0 };
-        cur.days += t.duration || 0;
-        cur.tasks += 1;
-        map.set(key, cur);
-      }
-    }
-    return Array.from(map.values())
+    return equipmentUnitDays(tasks)
       .map((e) => {
-        const cfg = equipRates[e.key] || { rate: DEFAULT_EQUIPMENT_RATE, unit: "hr" as const };
-        const cost = cfg.unit === "day" ? e.days * cfg.rate : e.days * hoursPerDay * cfg.rate;
-        return { ...e, rate: cfg.rate, unit: cfg.unit, hours: e.days * hoursPerDay, cost };
+        const cfg = equipRates[e.key] ?? { rate: 0, unit: "hr" as const };
+        const hours = e.days * hoursPerDay;
+        const cost = (cfg.unit === "day" ? e.days : hours) * cfg.rate;
+        return { ...e, rate: cfg.rate, unit: cfg.unit, hours, cost, priced: equipRates[e.key] !== undefined };
       })
       .sort((a, b) => b.cost - a.cost);
   }, [tasks, equipRates, hoursPerDay]);
@@ -242,7 +235,7 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
             group: buildingTradeLabels[(e.trade || "other") as BuildingTrade] || humanize(e.trade || "Other"),
             description: e.description || "(no description)",
             qty,
-            uom: (e.uom || "ea").toUpperCase(),
+            uom: civilTakeoffUnit(e.trade, e.uom || "ea", e.description).toUpperCase(),
             unitCost: Number(e.unit_cost) || 0,
             cost: qty * (Number(e.unit_cost) || 0),
           };
@@ -266,11 +259,19 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
     .filter(e => activePackage === "all" || e.package === activePackage)
     .map(e => ({ id: e.id, description: e.description, trade: e.discipline === "building" ? e.trade || "other" : "concrete",
       qty: e.discipline === "building" ? Number(e.unit_qty) || 0 : e.unit === "ft" ? cubicMetresToYards(concreteVolume(e)) : concreteVolume(e),
-      uom: e.discipline === "building" ? e.uom || "ea" : e.unit === "ft" ? "CY" : "m3" })), [estimates, activePackage]);
+      uom: e.discipline === "building" ? civilTakeoffUnit(e.trade, e.uom || "ea", e.description) : e.unit === "ft" ? "CY" : "m3" })), [estimates, activePackage]);
+  const commercialInputBasis = JSON.stringify([
+    projectId, activePackage, hoursPerDay, overheadPct, profitPct, wastePercent,
+    takeoffFingerprint(planningTakeoff),
+    tasks.map(task => [task.id, task.name, task.trade, task.start_date, task.duration, task.manpower, task.equipment]).sort(),
+    materialLines.map(line => [line.id, line.qty, line.uom, line.unitCost]).sort(),
+    Object.entries(labourRates).sort(), Object.entries(equipRates).sort(),
+  ]);
   const proposalPrices = costPlan ? pricePlan(costPlan, hoursPerDay, new Date().toISOString().slice(0, 10)) : null;
+  const approvalBasis = proposalPrices ? costApprovalBasis(commercialInputBasis, proposalPrices) : "";
   const proposalStale = Boolean(costPlan && costPlan.fingerprint !== takeoffFingerprint(planningTakeoff));
-  const proposalIncomplete = Boolean(costPlan && proposalPrices && !proposalPrices.complete);
-  const useProposal = Boolean(costPlan?.useInBid && proposalPrices?.complete && !proposalStale);
+  const useProposal = Boolean(costPlan && proposalPrices && !proposalStale && costApprovalSaved &&
+    approvalApplies(costPlan, approvalBasis, proposalPrices.complete));
   // A proposal the user approved but that no longer qualifies must be loudly
   // excluded — never silently swapped back to schedule allowances.
   const proposalExcluded = Boolean(costPlan?.useInBid && !useProposal);
@@ -286,10 +287,31 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
   const labourTotal = labourLines.reduce((s, l) => s + l.cost, 0);
   const equipTotal = equipmentLines.reduce((s, l) => s + l.cost, 0);
   const materialTotal = materialLines.reduce((s, l) => s + l.cost, 0);
-  const directTotal = labourTotal + equipTotal + materialTotal;
-  const overhead = directTotal * (overheadPct / 100);
-  const profit = (directTotal + overhead) * (profitPct / 100);
-  const grandTotal = directTotal + overhead + profit;
+  const fuelSummary = !savedFuel.isPending && !fuelCalendar.loading && !savedFuel.isError && !fuelCalendar.error
+    ? projectFuelSummary(tasks.map(task => ({ ...task, startDate: task.start_date })), savedFuel.data?.plan ?? emptyFuelPlan, fuelCalendar.holidays.map(day => day.date))
+    : null;
+  const separatelyPricedFuel = fuelSummary?.separateCost;
+  const fuelAdded = activePackage === "all" && !useProposal ? separatelyPricedFuel ?? 0 : 0;
+  const fuelStatus = tasks.some(task => task.equipment?.trim())
+    ? fuelSummary?.rows.length
+      ? fuelSummary.totalLitres === null ? "UNVERIFIED — add dated duty rates in Schedule → Fuel."
+        : fuelSummary.totalCost === null && fuelSummary.totalLitres > 0 ? "Volume modeled. Delivered diesel pricing remains unverified."
+        : !fuelSummary.commercialComplete ? "Fuel billing unconfirmed. Reconcile rate inclusions for each equipment assignment."
+        : useProposal ? "Schedule fuel is shown for reference. Confirm fuel in the reviewed proposal allowances."
+        : activePackage !== "all" ? "Schedule fuel is project-wide. It is carried only in the all-packages estimate."
+        : fuelSummary.totalLitres === 0 ? "Assignments documented as consuming no diesel."
+        : fuelAdded > 0 ? "Documented separate diesel charge is included in direct cost." : "Fuel is included in the entered equipment rates."
+      : fuelSummary ? "No diesel assignment to model." : "Saved fuel plan unavailable."
+    : "No diesel assignment to model.";
+  const unpricedEquipment = equipmentLines.filter(line => !line.priced).length;
+  const unverifiedCivilBasis = materialLines.some(line => line.uom.includes("BASIS UNVERIFIED"));
+  const draftBid = proposalExcluded || unpricedEquipment > 0 || unverifiedCivilBasis || Boolean(fuelSummary?.rows.length && (!fuelSummary.commercialComplete || fuelSummary.totalCost === null && fuelSummary.totalLitres !== 0))
+    || (!useProposal && labourLines.some(line => labourRates[line.trade] === undefined))
+    || (fuelSummary === null && tasks.some(task => task.equipment?.trim()));
+  const bidLabel = draftBid ? "Provisional estimate" : "Total estimate";
+  const { directTotal, overhead, profit, grandTotal } = commercialTotals({
+    labour: labourTotal, equipment: equipTotal, materials: materialTotal, fuel: fuelAdded,
+  }, overheadPct, profitPct);
   const totalHours = labourLines.reduce((s, l) => s + l.hours, 0);
 
   const exportToExcel = () => {
@@ -319,10 +341,13 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
         ["Labour", costExportNumber(labourTotal)],
         ["Equipment", costExportNumber(equipTotal)],
         ["Materials", costExportNumber(materialTotal)],
+        ["Separate Diesel Fuel", costExportNumber(fuelAdded)],
+        ["Fuel Review", fuelStatus],
+        ...(unpricedEquipment ? [["Unpriced Equipment Lines", unpricedEquipment]] : []),
         ["Total Direct Cost", costExportNumber(directTotal)],
         [`Overhead (${overheadPct}%)`, costExportNumber(overhead)],
         [`Profit (${profitPct}%)`, costExportNumber(profit)],
-        ["TOTAL BID PRICE (CAD)", costExportNumber(grandTotal)],
+        [`${bidLabel.toUpperCase()} (CAD)`, costExportNumber(grandTotal)],
         [],
         ["Total Man-Hours", costExportNumber(totalHours)],
         ["Concrete Waste Factor", `${wastePercent}%`],
@@ -353,15 +378,15 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
       "Equipment",
       [
         ...header(useProposal ? "EQUIPMENT — REVIEWED DRAWING COST PROPOSAL" : "EQUIPMENT — DERIVED FROM SCHEDULE"),
-        ["Equipment", "Activities", "Days", "Hours", "Rate", "Rate Basis", "Cost (CAD)"],
+        ["Equipment", "Activities", "Unit-Days", "Unit-Hours", "Rate", "Rate Basis", "Cost (CAD)"],
         ...equipmentLines.map((e) => [
           humanize(e.key),
           e.tasks,
           Number(e.days.toFixed(1)),
           costExportNumber(e.hours),
-          e.rate,
+          e.priced ? e.rate : "UNPRICED",
           e.unit === "day" ? "per day" : "per hour",
-          costExportNumber(e.cost),
+          e.priced ? costExportNumber(e.cost) : "UNPRICED",
         ]),
         ["Subtotal", "", "", "", "", "", costExportNumber(equipTotal)],
       ],
@@ -385,6 +410,10 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
       ],
       [22, 46, 12, 8, 13, 15]
     );
+
+    if (fuelSummary?.rows.length) addSheet("Fuel", [
+      ...header("SCHEDULE DIESEL DEMAND"), ["Separate fuel included in estimate (CAD)", costExportNumber(fuelAdded)], ...fuelExportRows(fuelSummary),
+    ], [38, 48, ...Array.from({ length: 25 }, () => 18)]);
 
     if (useProposal && costPlan) {
       addSheet("Proposal Basis", [
@@ -427,7 +456,7 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
           { label: "Labour", value: labourTotal, icon: HardHat, sub: `${Math.round(totalHours).toLocaleString()} man-hours` },
           { label: "Equipment", value: equipTotal, icon: Truck, sub: `${equipmentLines.length} item(s) from ${useProposal ? "proposal" : "schedule"}` },
           { label: "Materials", value: materialTotal, icon: Package, sub: `${materialLines.length} takeoff line(s)` },
-          { label: "Total Bid", value: grandTotal, icon: DollarSign, sub: `incl. ${overheadPct}% OH + ${profitPct}% profit` },
+          { label: bidLabel, value: grandTotal, icon: DollarSign, sub: `incl. ${overheadPct}% OH + ${profitPct}% profit` },
         ].map((c) => (
           <Card key={c.label}>
             <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
@@ -443,11 +472,16 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
       </div>
 
       {/* Settings */}
-      <DrawingCostPlanner projectId={projectId} activePackage={activePackage} takeoff={planningTakeoff} hoursPerDay={hoursPerDay} plan={costPlan} onChange={setCostPlan} />
-      <p className="text-sm text-muted-foreground">Bid labour & equipment basis: {useProposal ? "Reviewed drawing proposal (replaces schedule allowances)" : "Scheduled manpower and equipment"}. Preset schedule rates are unverified estimating placeholders.</p>
+      <DrawingCostPlanner key={`${projectId}:${activePackage}`} projectId={projectId} activePackage={activePackage}
+        takeoff={planningTakeoff} hoursPerDay={hoursPerDay} plan={costPlan}
+        approvalBasis={approvalBasis} approvalSaved={costApprovalSaved}
+        onChange={(plan, saved) => { setCostPlan(plan); setCostApprovalSaved(saved); }} />
+      <p className="text-sm text-muted-foreground">Bid labour & equipment basis: {useProposal ? "Reviewed drawing proposal (replaces schedule allowances)" : "Scheduled manpower and equipment"}. Labour presets are unverified. Equipment without an entered rate is unpriced.</p>
+      {unverifiedCivilBasis && <p role="alert" className="text-sm text-destructive">Some civil volumes need a bank, loose or compacted basis. Review the takeoff before using this estimate.</p>}
+      {unpricedEquipment > 0 && <p role="alert" className="text-sm text-destructive">{unpricedEquipment} equipment rate(s) are unpriced. The estimate is a subtotal of entered rates.</p>}
       {proposalExcluded && (
         <p role="alert" className="text-sm text-destructive">
-          The approved drawing proposal is no longer applied: {proposalStale ? "the takeoff changed since approval" : "pricing is incomplete"}. This bid currently uses scheduled manpower and equipment instead — regenerate and re-approve the proposal, or uncheck it, before exporting.
+          Drawing proposal approval is pending or stale. This provisional estimate uses scheduled manpower and equipment. Review the updated assumptions and save the approval before using proposal rates.
         </p>
       )}
       {useProposal && costPlan?.approvedBy && (
@@ -470,6 +504,10 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
               labourLines={labourLines}
               equipmentLines={equipmentLines}
               materialLines={materialLines}
+              fuelAdded={fuelAdded}
+              fuelSummary={fuelSummary}
+              fuelStatus={fuelStatus}
+              bidLabel={bidLabel}
               drawingBasis={useProposal}
               proposalNotes={useProposal && costPlan ? [...(costPlan.approvedBy ? [`Approved for bid by ${costPlan.approvedBy} on ${new Date(costPlan.approvedAt || "").toLocaleString("en-CA")}`] : []), ...costPlan.labour.map(l => `${l.description}: ${l.assumption}; ${l.evidence}`), ...costPlan.equipment.map(e => `${e.name}: ${e.requirement}`), ...costPlan.uncertainties, ...costPlan.exclusions] : []}
             />
@@ -589,7 +627,7 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
                 <TableHeader>
                   <TableRow>
                     <TableHead>Equipment</TableHead>
-                    <TableHead className="text-right">Days</TableHead>
+                    <TableHead className="text-right">Unit-days</TableHead>
                     <TableHead className="text-right w-28">Rate</TableHead>
                     <TableHead className="w-28">Basis</TableHead>
                     <TableHead className="text-right">Cost</TableHead>
@@ -600,6 +638,7 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
                     <TableRow key={e.key}>
                       <TableCell className="font-medium">
                         {humanize(e.key)}
+                        {!e.priced && <span className="ml-2 text-xs font-medium text-destructive">Unpriced</span>}
                         <span className="block text-xs text-muted-foreground">{e.tasks} activity(ies)</span>
                       </TableCell>
                       <TableCell className="text-right">{e.days.toLocaleString()}</TableCell>
@@ -607,7 +646,8 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
                         <Input
                           type="number"
                           className="h-9 text-right"
-                          value={useProposal ? e.rate : equipRates[e.key]?.rate ?? e.rate}
+                          value={e.priced ? e.rate : ""}
+                          placeholder="Unpriced"
                           disabled={useProposal}
                           onChange={(ev) =>
                             setEquipRates((prev) => ({
@@ -616,13 +656,13 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
                             }))
                           }
                           onBlur={(ev) =>
-                            saveRate("equipment", e.key, Number(ev.target.value) || 0, equipRates[e.key]?.unit || "hr")
+                            ev.target.value.trim() !== "" && saveRate("equipment", e.key, Number(ev.target.value), equipRates[e.key]?.unit || "hr")
                           }
                         />
                       </TableCell>
                       <TableCell>
                         <Select
-                          disabled={useProposal}
+                          disabled={useProposal || !e.priced}
                           value={useProposal ? e.unit : equipRates[e.key]?.unit || e.unit}
                           onValueChange={(v) => {
                             const unit = v as "hr" | "day";
@@ -640,7 +680,7 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
                           </SelectContent>
                         </Select>
                       </TableCell>
-                      <TableCell className="text-right font-semibold">{money(e.cost)}</TableCell>
+                      <TableCell className="text-right font-semibold">{e.priced ? money(e.cost) : "—"}</TableCell>
                     </TableRow>
                   ))}
                   <TableRow>
@@ -721,6 +761,15 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader><CardTitle className="text-base">Scheduled diesel</CardTitle></CardHeader>
+        <CardContent className="space-y-1 text-sm">
+          <p>{fuelStatus}</p>
+          {fuelSummary?.totalLitres != null && <p>{fuelSummary.totalLitres.toLocaleString("en-CA", { maximumFractionDigits: 2 })} L modeled</p>}
+          {fuelSummary?.totalCost != null && <p>{money2(fuelSummary.totalCost)} delivered cost at {fuelSummary.price} CAD/L · {fuelSummary.priceSource} ({fuelSummary.priceDate})</p>}
+        </CardContent>
+      </Card>
+
       {/* Bid roll-up */}
       <Card className="border-construction-orange/40">
         <CardHeader>
@@ -731,6 +780,7 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
             ["Labour", labourTotal],
             ["Equipment", equipTotal],
             ["Materials", materialTotal],
+            ["Separate diesel fuel", fuelAdded],
           ].map(([label, val]) => (
             <div key={label as string} className="flex justify-between">
               <span className="text-muted-foreground">{label as string}</span>
@@ -750,7 +800,7 @@ export const CostEstimate = ({ projectId, projectName, activePackage, wastePerce
             <span>{money2(profit)}</span>
           </div>
           <div className="flex justify-between border-t pt-3 text-lg font-bold">
-            <span>Total Bid (CAD)</span>
+            <span>{bidLabel} (CAD)</span>
             <span className="text-construction-orange">{money2(grandTotal)}</span>
           </div>
         </CardContent>

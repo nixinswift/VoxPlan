@@ -3,6 +3,7 @@ import { FileDown, Printer } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Task } from "@/types/schedule";
 import { parseEquipment } from "@/lib/scheduleEngine";
+import type { ProjectFuelSummary } from "@/lib/projectFuel";
 import { useProjectHolidays } from "@/hooks/useProjectHolidays";
 
 interface ScheduleProposalExportProps {
@@ -10,6 +11,7 @@ interface ScheduleProposalExportProps {
   projectName: string;
   projectDescription?: string | null;
   tasks: Task[];
+  fuelSummary?: ProjectFuelSummary | null;
   disabled?: boolean;
 }
 
@@ -49,6 +51,7 @@ export const ScheduleProposalExport = ({
   projectName,
   projectDescription,
   tasks,
+  fuelSummary,
   disabled,
   projectId,
 }: ScheduleProposalExportProps) => {
@@ -324,7 +327,7 @@ export const ScheduleProposalExport = ({
           <th>Activity</th>
           <th>Trade</th>
           <th class="text-right">Start</th>
-          <th class="text-right">Finish</th>
+          <th class="text-right">End (exclusive)</th>
           <th class="text-right">Duration</th>
           <th class="text-right">Crew</th>
           <th>Equipment</th>
@@ -367,6 +370,10 @@ export const ScheduleProposalExport = ({
         <tr><td style="font-weight:600;width:200px;">Working calendar</td><td>Durations are end-exclusive calendar spans. Project holidays are excluded from peak manpower.</td></tr>
         <tr><td style="font-weight:600;">Sequencing</td><td>Dates reflect the saved schedule. Only recorded task dependencies are confirmed; construction templates require review.</td></tr>
         <tr><td style="font-weight:600;">Crew loading</td><td>Peak workforce of ${peakManpower} assumes shared trade pools across concurrent activities.</td></tr>
+        <tr><td style="font-weight:600;">Diesel demand</td><td>${fuelSummary?.totalLitres != null
+          ? `${fuelSummary.totalLitres.toLocaleString("en-CA", { maximumFractionDigits: 2 })} L${fuelSummary.totalCost == null
+            ? " · delivered price unverified" : ` · ${fuelSummary.totalCost.toLocaleString("en-CA", { style: "currency", currency: "CAD" })} at ${fuelSummary.price} CAD/L`}`
+          : fuelSummary && !fuelSummary.rows.length ? "No equipment assignments." : "UNVERIFIED · see the saved project fuel plan."}</td></tr>
         <tr><td style="font-weight:600;">Basis</td><td>Schedule is based on the current project scope and is subject to change with design revisions, weather, and site access.</td></tr>
       </tbody>
     </table>

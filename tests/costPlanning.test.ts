@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { labourEffort, pricePlan, rankQuotes, type PlannedLabour, type CostPlan } from "../src/lib/costPlanning";
+import { approvalApplies, costApprovalBasis, labourEffort, pricePlan, rankQuotes, type PlannedLabour, type CostPlan } from "../src/lib/costPlanning";
 
 const line: PlannedLabour = { id: "1", estimateId: "pipe", description: "Pipe installation", trade: "mechanical", quantity: 12.5, uom: "m", hoursPerUnit: 2, factor: 1.2, workers: 3, maxWorkers: 4, rate: 76, evidence: "M-101", assumption: "provisional", crewMix: "2 fitters, 1 helper", quotes: [] };
 test("quantity times installation productivity and conditions determines labour, not crew size", () => {
@@ -22,4 +22,17 @@ test("equipment includes rental units, duration, billing basis and fixed extras 
   expect(pricePlan(plan, 8, "2026-10-24").equipmentTotal).toBe(750);
   expect(pricePlan(plan, 8, "2026-10-24").labourTotal).toBe(2280);
   expect(pricePlan({ ...plan, labour: [{ ...line, rate: 0 }] }, 8, "2026-10-24").complete).toBe(false);
+});
+test("approval requires a recorded identity and the current commercial inputs and quote selection", () => {
+  const quote = { id: "approval-quote", supplier: "Fixture vendor", reference: "Fixture ref", validUntil: "2026-11-24", rate: line.rate, extras: 0, available: true, comparable: true };
+  const plan: CostPlan = { labour: [{ ...line, quotes: [quote] }], equipment: [], context: "", targetDays: 2, fingerprint: "", uncertainties: [], exclusions: [], useInBid: true };
+  const validPrice = pricePlan(plan, 8, "2026-11-24");
+  const validBasis = costApprovalBasis("original inputs", validPrice);
+  expect(approvalApplies({ ...plan, approvedBasis: validBasis }, validBasis, validPrice.complete)).toBe(false);
+  const saved = { ...plan, approvedBasis: validBasis, approvedBy: "synthetic-id", approvedAt: "2026-11-24T00:00:00Z" };
+  expect(approvalApplies(saved, validBasis, validPrice.complete)).toBe(true);
+  expect(approvalApplies(saved, costApprovalBasis("changed schedule", validPrice), true)).toBe(false);
+  const expiredPrice = pricePlan(plan, 8, "2026-11-25");
+  expect(expiredPrice.labourTotal).toBe(validPrice.labourTotal);
+  expect(approvalApplies(saved, costApprovalBasis("original inputs", expiredPrice), true)).toBe(false);
 });

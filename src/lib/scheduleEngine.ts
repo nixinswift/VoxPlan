@@ -1,6 +1,6 @@
 import { Task } from "@/types/schedule";
-import { parseEquipment, findingScore } from "../../supabase/functions/_shared/resource-equipment";
-export { parseEquipment } from "../../supabase/functions/_shared/resource-equipment";
+import { normalizeEquipmentName, parseEquipmentDemand, findingScore } from "../../supabase/functions/_shared/resource-equipment";
+export { parseEquipment, parseEquipmentDemand } from "../../supabase/functions/_shared/resource-equipment";
 
 /**
  * Deterministic construction scheduling engine.
@@ -340,10 +340,10 @@ export const buildPlan = (tasks: Task[], options: EngineOptions = {}): Plan => {
   const workerCaps = new Map<string, number>();
   const equipmentCaps = new Map<string, number>();
   (options.constraints ?? []).forEach((c) => {
-    const key = c.name.trim().toLowerCase();
+    const key = c.type === "equipment" ? normalizeEquipmentName(c.name) : c.name.trim().toLowerCase();
     if (!key || !Number.isFinite(c.available)) return;
     if (c.type === "workers") workerCaps.set(key, c.available);
-    else equipmentCaps.set(key, Math.max(1, c.available));
+    else equipmentCaps.set(key, Math.max(0, Math.floor(c.available)));
   });
 
   const empty: Plan = {
@@ -373,10 +373,14 @@ export const buildPlan = (tasks: Task[], options: EngineOptions = {}): Plan => {
       phaseLabel: phase.label,
       duration: Math.max(1, Math.round(t.duration || 1)),
       manpower: Math.max(0, Math.round(t.manpower || 0)),
-      equipment: parseEquipment(t.equipment),
+      equipment: parseEquipmentDemand(t.equipment),
       originalStart: dayStart(new Date(t.startDate)),
     };
   });
+
+  const countedPools = new Set(prepared.flatMap(p => p.equipment.filter(e => e.countedPool).map(e => e.key)));
+  const equipmentCapacity = (key: string) => equipmentCaps.get(key)
+    ?? (countedPools.has(key) ? undefined : assumeSingleEquipment ? 1 : Infinity);
 
   const projectStart = cal.next(
     options.projectStart
@@ -508,13 +512,28 @@ export const buildPlan = (tasks: Task[], options: EngineOptions = {}): Plan => {
       canApply = false;
       issues.push({ type: "manpower", severity: "high", taskId: p.task.id, taskName: p.task.name, issue: `This activity needs ${p.manpower} workers but the pool has ${workerCap}. Moving its date cannot solve that.`, recommendation: "Change the crew, duration or available capacity before applying.", proposedStartDate: null });
     }
+    const blockedEquipment = p.equipment.filter(e => {
+      const capacity = equipmentCapacity(e.key);
+      return capacity === undefined || e.quantity > capacity;
+    });
+    for (const e of blockedEquipment) {
+      const capacity = equipmentCapacity(e.key);
+      canApply = false;
+      issues.push({
+        type: "equipment", severity: "high", taskId: p.task.id, taskName: p.task.name,
+        issue: capacity === undefined
+          ? `Capacity for "${e.key}" is unconfirmed. This activity needs ${e.quantity} unit(s).`
+          : `This activity needs ${e.quantity} unit(s) of "${e.key}" but only ${capacity} are available.`,
+        recommendation: "Confirm the available fleet or revise the assignment before applying.", proposedStartDate: null,
+      });
+    }
     // never schedule earlier than the crew intended unless it removes idle time:
     // the engine is allowed to pull tasks earlier (that's the point), but never
     // before mobilization.
     let days = cal.workingDays(candidate, p.duration);
     let guard = 0;
 
-    while (!impossibleCrew && guard++ < 400) {
+    while (!impossibleCrew && blockedEquipment.length === 0 && guard++ < 400) {
       let conflictDay: Date | null = null;
 
       const isEnvelope = ENVELOPE_RANKS.includes(p.phase);
@@ -532,8 +551,8 @@ export const buildPlan = (tasks: Task[], options: EngineOptions = {}): Plan => {
           break;
         }
         const equipConflict = p.equipment.find((e) => {
-          const cap = equipmentCaps.get(e) ?? (assumeSingleEquipment ? 1 : Infinity);
-          return usage(equipLoad, iso, e) + 1 > cap;
+          const cap = equipmentCapacity(e.key) ?? Infinity;
+          return usage(equipLoad, iso, e.key) + e.quantity > cap;
         });
         if (equipConflict) {
           conflictDay = d;
@@ -555,7 +574,7 @@ export const buildPlan = (tasks: Task[], options: EngineOptions = {}): Plan => {
       const iso = toISO(d);
       commit(tradeLoad, iso, tradeKey, p.manpower);
       if (ENVELOPE_RANKS.includes(p.phase)) commit(frontLoad, iso, "envelope", 1);
-      p.equipment.forEach((e) => commit(equipLoad, iso, e, 1));
+      p.equipment.forEach((e) => commit(equipLoad, iso, e.key, e.quantity));
     });
 
     const prevFinish = phaseFinish.get(p.phase);
@@ -576,7 +595,7 @@ export const buildPlan = (tasks: Task[], options: EngineOptions = {}): Plan => {
       phaseLabel: p.phaseLabel,
       manpower: p.manpower,
       duration: p.duration,
-      equipment: p.equipment,
+      equipment: p.equipment.map(e => e.quantity === 1 ? e.key : `${e.quantity} × ${e.key}`),
       originalStart: p.originalStart,
       start,
       finish,
@@ -726,7 +745,7 @@ export const buildPlan = (tasks: Task[], options: EngineOptions = {}): Plan => {
 
 
   // 3. Equipment double-booking on current dates
-  const equipDayMap = new Map<string, Map<string, { id: string; name: string }[]>>();
+  const equipDayMap = new Map<string, Map<string, { id: string; name: string; quantity: number }[]>>();
   prepared.forEach((p) => {
     cal.workingDays(p.originalStart, p.duration).forEach((d) => {
       const iso = toISO(d);
@@ -736,22 +755,25 @@ export const buildPlan = (tasks: Task[], options: EngineOptions = {}): Plan => {
         equipDayMap.set(iso, inner);
       }
       const bookings = inner;
-      p.equipment.forEach((e) => bookings.set(e, [...(bookings.get(e) ?? []), { id: p.task.id, name: p.task.name }]));
+      p.equipment.forEach(({key, quantity}) => bookings.set(key, [
+        ...(bookings.get(key) ?? []), { id: p.task.id, name: p.task.name, quantity },
+      ]));
     });
   });
   const reportedEquip = new Set<string>();
   equipDayMap.forEach((inner, iso) => {
     inner.forEach((names, equip) => {
-      const cap = equipmentCaps.get(equip) ?? (assumeSingleEquipment ? 1 : Infinity);
+      const cap = equipmentCapacity(equip);
       const unique = Array.from(new Map(names.map(task => [task.id, task])).values());
-      if (unique.length > cap && !reportedEquip.has(equip)) {
+      const units = unique.reduce((total, task) => total + task.quantity, 0);
+      if (cap !== undefined && unique.length > 1 && units > cap && !reportedEquip.has(equip)) {
         reportedEquip.add(equip);
         issues.push({
           type: "equipment",
           severity: "high",
           taskId: null,
           taskName: unique[0].name,
-          issue: `${unique.length} activities need "${equip}" on ${iso} but only ${cap === Infinity ? "limited" : cap} available (${unique.map(task => task.name).join(", ")}).`,
+          issue: `${unique.length} activities need ${units} unit(s) of "${equip}" on ${iso} but only ${cap} are available (${unique.map(task => task.name).join(", ")}).`,
           recommendation: `Stagger these activities or add another ${equip}.`,
           proposedStartDate: null,
         });

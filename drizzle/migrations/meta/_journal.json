@@ -85,6 +85,20 @@
       "when": 1795517623300,
       "tag": "0011_protect_individual_practice_projects",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795524262757,
+      "tag": "0012_project_fuel_plans",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795524717666,
+      "tag": "0013_record_cost_approval_identity",
+      "breakpoints": true
     }
   ]
 }

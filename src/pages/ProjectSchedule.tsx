@@ -18,6 +18,9 @@ import { FuelAnalysis } from "@/components/FuelAnalysis";
 import { SpecsChat } from "@/components/SpecsChat";
 import { ScheduleProposalExport } from "@/components/ScheduleProposalExport";
 import { ScheduleUploadReview } from "@/components/ScheduleUploadReview";
+import { useProjectFuelPlan } from "@/hooks/useProjectFuelPlan";
+import { useProjectHolidays } from "@/hooks/useProjectHolidays";
+import { emptyFuelPlan, projectFuelSummary } from "@/lib/projectFuel";
 import { runOnce } from "@/lib/taskCreation";
 
 
@@ -32,6 +35,11 @@ const ProjectSchedule = () => {
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const navigate = useNavigate();
   const { projectId } = useParams<{ projectId: string }>();
+  const savedFuel = useProjectFuelPlan(projectId);
+  const fuelCalendar = useProjectHolidays(projectId);
+  const fuelSummary = !savedFuel.isPending && !fuelCalendar.loading && !savedFuel.isError && !fuelCalendar.error
+    ? projectFuelSummary(tasks, savedFuel.data?.plan ?? emptyFuelPlan, fuelCalendar.holidays.map(day => day.date))
+    : null;
   const creationWrites = useRef(new Map<string, Promise<void>>());
 
   useEffect(() => {
@@ -445,6 +453,7 @@ const ProjectSchedule = () => {
                 projectName={project.name}
                 projectDescription={project.description}
                 tasks={tasks}
+                fuelSummary={fuelSummary}
               />
             </div>
           </div>
@@ -525,7 +534,7 @@ const ProjectSchedule = () => {
               </TabsContent>
 
               <TabsContent value="fuel" className="mt-3 sm:mt-4">
-                <FuelAnalysis tasks={tasks} />
+                {projectId && <FuelAnalysis key={projectId} projectId={projectId} projectName={project.name} tasks={tasks} />}
               </TabsContent>
             </Tabs>
           )}

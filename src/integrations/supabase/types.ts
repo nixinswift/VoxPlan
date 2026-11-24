@@ -259,6 +259,20 @@ export type Database = {
           },
         ]
       }
+      project_fuel_plans: {
+        Row: { project_id: string; plan: Json; revision: number }
+        Insert: { project_id: string; plan: Json; revision?: number }
+        Update: { plan?: Json; revision?: number }
+        Relationships: [
+          {
+            foreignKeyName: "project_fuel_plans_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: true
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       project_holidays: {
         Row: {
           created_at: string

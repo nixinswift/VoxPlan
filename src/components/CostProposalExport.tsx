@@ -1,6 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { FileDown, Printer } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { commercialTotals } from "@/lib/costPlanning";
+import type { ProjectFuelSummary } from "@/lib/projectFuel";
 
 export interface CostLabourLine {
   trade: string;
@@ -19,6 +21,7 @@ export interface CostEquipmentLine {
   rate: number;
   unit: "hr" | "day";
   cost: number;
+  priced: boolean;
 }
 
 export interface CostMaterialLine {
@@ -40,6 +43,10 @@ interface Props {
   labourLines: CostLabourLine[];
   equipmentLines: CostEquipmentLine[];
   materialLines: CostMaterialLine[];
+  fuelAdded: number;
+  fuelSummary: ProjectFuelSummary | null;
+  fuelStatus: string;
+  bidLabel: string;
   disabled?: boolean;
   drawingBasis?: boolean;
   proposalNotes?: string[];
@@ -74,6 +81,10 @@ export const CostProposalExport = ({
   labourLines,
   equipmentLines,
   materialLines,
+  fuelAdded,
+  fuelSummary,
+  fuelStatus,
+  bidLabel,
   disabled,
   drawingBasis = false,
   proposalNotes = [],
@@ -87,10 +98,9 @@ export const CostProposalExport = ({
     const labourTotal = labourLines.reduce((s, l) => s + l.cost, 0);
     const equipTotal = equipmentLines.reduce((s, l) => s + l.cost, 0);
     const materialTotal = materialLines.reduce((s, l) => s + l.cost, 0);
-    const directTotal = labourTotal + equipTotal + materialTotal;
-    const overhead = directTotal * (overheadPct / 100);
-    const profit = (directTotal + overhead) * (profitPct / 100);
-    const grandTotal = directTotal + overhead + profit;
+    const { directTotal, overhead, profit, grandTotal } = commercialTotals({
+      labour: labourTotal, equipment: equipTotal, materials: materialTotal, fuel: fuelAdded,
+    }, overheadPct, profitPct);
     const totalHours = labourLines.reduce((s, l) => s + l.hours, 0);
 
     const packageLabel = activePackage !== "all" ? ` — ${activePackage}` : "";
@@ -100,6 +110,7 @@ export const CostProposalExport = ({
       { name: "Labour", value: labourTotal, color: "#F97316" },
       { name: "Equipment", value: equipTotal, color: "#3B82F6" },
       { name: "Materials", value: materialTotal, color: "#10B981" },
+      ...(fuelAdded > 0 ? [{ name: "Separate diesel", value: fuelAdded, color: "#6366F1" }] : []),
     ];
     const maxVal = Math.max(...cats.map((c) => c.value), 1);
 
@@ -188,7 +199,7 @@ export const CostProposalExport = ({
 
   <div class="cover">
     <h1>${esc(projectName || "Project Estimate")}${esc(packageLabel)}</h1>
-    <div class="subtitle">Detailed Cost Estimate &amp; Bid Summary (CAD)</div>
+    <div class="subtitle">Detailed Cost Estimate (CAD)</div>
     <div class="meta">
       <div>Date: <span>${today}</span></div>
       <div>Man-Hours: <span>${num(totalHours)}</span></div>
@@ -209,7 +220,7 @@ export const CostProposalExport = ({
       )
       .join("")}
     <div class="summary-card total">
-      <div class="label">Total Bid</div>
+      <div class="label">${esc(bidLabel)}</div>
       <div class="value">${money(grandTotal)}</div>
       <div class="sub">incl. ${overheadPct}% OH + ${profitPct}% profit</div>
     </div>
@@ -291,7 +302,7 @@ export const CostProposalExport = ({
   <div class="section">
     <div class="section-title">Equipment <span class="section-badge">${equipmentLines.length} item${equipmentLines.length > 1 ? "s" : ""}</span></div>
     <table>
-      <thead><tr><th>Equipment</th><th class="text-right">Activities</th><th class="text-right">Days</th><th class="text-right">Hours</th><th class="text-right">Rate</th><th class="text-right">Basis</th><th class="text-right">Cost</th></tr></thead>
+      <thead><tr><th>Equipment</th><th class="text-right">Activities</th><th class="text-right">Unit-days</th><th class="text-right">Unit-hours</th><th class="text-right">Rate</th><th class="text-right">Basis</th><th class="text-right">Cost</th></tr></thead>
       <tbody>
         ${equipmentLines
           .map(
@@ -300,9 +311,9 @@ export const CostProposalExport = ({
           <td class="text-right">${e.tasks}</td>
           <td class="text-right font-mono">${num(e.days, 1)}</td>
           <td class="text-right font-mono">${num(e.hours)}</td>
-          <td class="text-right font-mono">${money2(e.rate)}</td>
+          <td class="text-right font-mono">${e.priced ? money2(e.rate) : "UNPRICED"}</td>
           <td class="text-right">${e.unit === "day" ? "per day" : "per hour"}</td>
-          <td class="text-right font-mono" style="font-weight:600;">${money(e.cost)}</td>
+          <td class="text-right font-mono" style="font-weight:600;">${e.priced ? money(e.cost) : "UNPRICED"}</td>
         </tr>`
           )
           .join("")}
@@ -354,11 +365,12 @@ export const CostProposalExport = ({
         <tr><td style="font-weight:600;">Labour</td><td class="text-right font-mono">${money(labourTotal)}</td></tr>
         <tr><td style="font-weight:600;">Equipment</td><td class="text-right font-mono">${money(equipTotal)}</td></tr>
         <tr><td style="font-weight:600;">Materials</td><td class="text-right font-mono">${money(materialTotal)}</td></tr>
+        <tr><td style="font-weight:600;">Separate diesel fuel</td><td class="text-right font-mono">${money(fuelAdded)}</td></tr>
         <tr class="subtotal-row"><td>Total Direct Cost</td><td class="text-right font-mono">${money(directTotal)}</td></tr>
         <tr><td>Overhead (${overheadPct}%)</td><td class="text-right font-mono">${money(overhead)}</td></tr>
         <tr><td>Profit (${profitPct}%)</td><td class="text-right font-mono">${money(profit)}</td></tr>
         <tr style="background:#1a1a2e;color:white;">
-          <td style="font-weight:700;padding:12px;">Total Bid Price (CAD)</td>
+          <td style="font-weight:700;padding:12px;">${esc(bidLabel)} (CAD)</td>
           <td class="text-right font-mono" style="font-weight:700;padding:12px;font-size:14px;">${money(grandTotal)}</td>
         </tr>
       </tbody>
@@ -372,10 +384,12 @@ export const CostProposalExport = ({
       <li>${drawingBasis ? "Labour derived from reviewed drawing takeoff installation productivity and crew assumptions" : "Labour derived from the project schedule manpower loading"} at ${hoursPerDay} working hours per day.</li>
       <li>${drawingBasis ? "Equipment costs based on reviewed rental allowances. Documented comparable quotes include entered fixed extras; no live market-price guarantee." : "Equipment costs based on scheduled activity durations and the rates listed above."}</li>
       ${proposalNotes.map(note => `<li>${esc(note)}</li>`).join("")}
+      <li>${esc(fuelStatus)}</li>
+      ${fuelSummary?.totalLitres != null ? `<li>Schedule diesel demand: ${num(fuelSummary.totalLitres, 2)} L${fuelSummary.totalCost == null ? "" : `, ${money(fuelSummary.totalCost)} delivered at ${fuelSummary.price} CAD/L (${esc(fuelSummary.priceSource)}, ${esc(fuelSummary.priceDate)})`}.</li>` : ""}
       <li>Concrete quantities include a ${wastePercent}% waste/over-order allowance.</li>
       <li>Overhead and profit applied as noted; profit calculated on direct cost plus overhead.</li>
       <li>Excludes permits, bonding, escalation, winter conditions, and unforeseen site conditions unless stated.</li>
-      <li>Estimate valid for 30 days from the date of issue.</li>
+      <li>Confirm quote validity and exclusions before issuing a commercial proposal.</li>
     </ul>
   </div>
 

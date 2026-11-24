@@ -14,6 +14,7 @@ import { prepareDrawingFiles } from "@/lib/prepareDrawingFiles";
 import { withDrawingIds, mergeDrawingAudit, approveDrawingRows, reconcileDrawingParts, reconcileUncertainties, MULTIPART_REVIEW_UNCERTAINTY } from "@/lib/drawingReview";
 import type { DrawingAudit, DrawingLine } from "@/lib/drawingTakeoff";
 import { calcBuildingQty } from "@/lib/buildingQuantities";
+import { civilTakeoffUnit, civilVolumeBasis } from "../../supabase/functions/_shared/civil-volume";
 export { calcBuildingQty } from "@/lib/buildingQuantities";
 
 export type BuildingTrade =
@@ -385,6 +386,24 @@ export const BuildingTakeoff = ({ projectId, projectName, userId, activePackage 
   };
 
 
+  const takeoffUnit = (item: BuildingItem) => item.trade === "civil" && item.uom === "m3"
+    ? civilTakeoffUnit(item.trade, item.uom, item.description) : uomLabels[item.uom];
+  const quantitySummary = (lines: BuildingItem[], precision: number, separator: string) => {
+    const byUom = new Map<string, number>();
+    let unverified = 0;
+    for (const line of lines) {
+      if (line.trade === "civil" && line.uom === "m3" && !civilVolumeBasis(line.description)) {
+        unverified += 1;
+        continue;
+      }
+      const unit = takeoffUnit(line);
+      byUom.set(unit, (byUom.get(unit) ?? 0) + calcBuildingQty(line));
+    }
+    const results = [...byUom].map(([uom, value]) => `${value.toFixed(precision)} ${uom}`);
+    if (unverified) results.push(`${unverified} line(s) need volume basis`);
+    return results.join(separator);
+  };
+
   const filtered = activePackage === "all" ? items : items.filter((i) => i.package === activePackage);
   const tradeItems = filtered.filter((i) => i.trade === activeTrade);
   const activeTrades = TRADE_ORDER.filter((t) => filtered.some((i) => i.trade === t));
@@ -398,7 +417,7 @@ export const BuildingTakeoff = ({ projectId, projectName, userId, activePackage 
       Qty: i.quantity,
       "Length or quantity per occurrence (UOM)": i.length || "",
       "Width/Height (m)": i.width || "",
-      UOM: uomLabels[i.uom],
+      UOM: takeoffUnit(i),
       "Measured Qty": parseFloat(calcBuildingQty(i).toFixed(2)),
       Notes: i.notes,
     }));
@@ -406,17 +425,7 @@ export const BuildingTakeoff = ({ projectId, projectName, userId, activePackage 
 
     const summary = TRADE_ORDER.filter((t) => filtered.some((i) => i.trade === t)).map((t) => {
       const ti = filtered.filter((i) => i.trade === t);
-      const byUom: Record<string, number> = {};
-      ti.forEach((i) => {
-        byUom[uomLabels[i.uom]] = (byUom[uomLabels[i.uom]] || 0) + calcBuildingQty(i);
-      });
-      return {
-        Trade: tradeLabels[t],
-        Items: ti.length,
-        Quantities: Object.entries(byUom)
-          .map(([u, v]) => `${v.toFixed(2)} ${u}`)
-          .join(", "),
-      };
+      return { Trade: tradeLabels[t], Items: ti.length, Quantities: quantitySummary(ti, 2, ", ") };
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), "Trade Summary");
 
@@ -524,10 +533,6 @@ export const BuildingTakeoff = ({ projectId, projectName, userId, activePackage 
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
           {activeTrades.map((t) => {
             const ti = filtered.filter((i) => i.trade === t);
-            const byUom: Record<string, number> = {};
-            ti.forEach((i) => {
-              byUom[uomLabels[i.uom]] = (byUom[uomLabels[i.uom]] || 0) + calcBuildingQty(i);
-            });
             return (
               <Card
                 key={t}
@@ -538,9 +543,7 @@ export const BuildingTakeoff = ({ projectId, projectName, userId, activePackage 
                   <p className="text-xs font-medium text-muted-foreground truncate">{tradeLabels[t]}</p>
                   <p className="text-xl font-bold">{ti.length}</p>
                   <p className="text-[11px] text-muted-foreground truncate">
-                    {Object.entries(byUom)
-                      .map(([u, v]) => `${v.toFixed(1)} ${u}`)
-                      .join(" · ")}
+                    {quantitySummary(ti, 1, " · ")}
                   </p>
                 </CardContent>
               </Card>
@@ -679,7 +682,7 @@ export const BuildingTakeoff = ({ projectId, projectName, userId, activePackage 
                         </Select>
                       </TableCell>
                       <TableCell className="text-right font-mono font-medium">
-                        {calcBuildingQty(item).toFixed(2)} {uomLabels[item.uom]}
+                        {calcBuildingQty(item).toFixed(2)} {takeoffUnit(item)}
                       </TableCell>
                       <TableCell>
                         <Button
@@ -698,10 +701,7 @@ export const BuildingTakeoff = ({ projectId, projectName, userId, activePackage 
                       Subtotal ({tradeLabels[activeTrade]})
                     </TableCell>
                     <TableCell className="text-right font-mono">
-                      {Object.entries(tradeItems.reduce<Partial<Record<Uom, number>>>((totals, item) => {
-                        totals[item.uom] = (totals[item.uom] || 0) + calcBuildingQty(item);
-                        return totals;
-                      }, {})).map(([uom, qty]) => `${Number(qty).toFixed(2)} ${uomLabels[uom as Uom]}`).join(" · ")}
+                      {quantitySummary(tradeItems, 2, " · ")}
                     </TableCell>
                     <TableCell />
                   </TableRow>

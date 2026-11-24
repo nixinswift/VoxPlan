@@ -13,7 +13,7 @@ import { Task } from "@/types/schedule";
 import { exceedsDrawingFileLimit, MAX_DRAWING_FILE_MB } from "@/lib/drawingUploadLimits";
 import { prepareDrawingFiles, normalizeDrawingFile } from "@/lib/prepareDrawingFiles";
 import { mergeDrawingAudit } from "@/lib/drawingReview";
-import { buildPlan, parseEquipment } from "@/lib/scheduleEngine";
+import { buildPlan, parseEquipmentDemand } from "@/lib/scheduleEngine";
 
 interface Activity {
   creationId?: string;
@@ -75,12 +75,11 @@ export const ScheduleUploadReview = ({ tasks, onImportTasks }: Props) => {
 
   const equipmentFleet = () => {
     const fleet: Record<string, number> = {};
-    tasks.forEach((t) =>
-      parseEquipment(t.equipment)
-        .forEach((e) => {
-          fleet[e] = Math.max(fleet[e] ?? 1, 1);
-        })
-    );
+    const demands = tasks.flatMap(t => parseEquipmentDemand(t.equipment));
+    const countedPools = new Set(demands.filter(e => e.countedPool).map(e => e.key));
+    for (const { key } of demands) {
+      if (!countedPools.has(key)) fleet[key] = 1;
+    }
     return fleet;
   };
 

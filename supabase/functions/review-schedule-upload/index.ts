@@ -3,7 +3,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { MECHANICAL_SCHEDULING_GUIDANCE } from "../_shared/mechanical-planning.ts";
 import { TECHNICAL_DRAWING_GUIDANCE } from "../_shared/technical-drawings.ts";
 import { scheduleOverlaps as overlaps } from "../_shared/schedule-intervals.ts";
-import { parseEquipment as normalizeEquipment, findingScore, concurrentAt } from "../_shared/resource-equipment.ts";
+import { normalizeEquipmentName, parseEquipmentDemand, findingScore, concurrentAt } from "../_shared/resource-equipment.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -50,31 +50,25 @@ function deterministicFindings(activities: Activity[], equipmentFleet: Record<st
   }
 
   // Equipment double-booking
-  const bookings = new Map<string, Activity[]>();
+  const bookings = new Map<string, (Activity & { quantity: number })[]>();
   for (const a of activities) {
-    for (const e of normalizeEquipment(a.equipment)) {
-      if (!bookings.has(e)) bookings.set(e, []);
-      bookings.get(e)?.push(a);
+    for (const { key, quantity } of parseEquipmentDemand(a.equipment)) {
+      bookings.set(key, [...(bookings.get(key) ?? []), { ...a, quantity }]);
     }
   }
-  for (const [equip, list] of bookings) {
-    const available = equipmentFleet[equip] ?? 1;
-    for (let i = 0; i < list.length; i++) {
-      for (let j = i + 1; j < list.length; j++) {
-        if (overlaps(list[i], list[j])) {
-          const instant = Math.max(Date.parse(list[i].startDate), Date.parse(list[j].startDate));
-          const concurrent = concurrentAt(list, instant);
-          if (concurrent > available) {
-            findings.push({
-              type: "equipment",
-              severity: "high",
-              activity: `${list[i].name} / ${list[j].name}`,
-              issue: `${concurrent} activities need "${equip}" at the same time but only ${available} appear${available === 1 ? "s" : ""} to be available.`,
-              recommendation: `Stagger these activities, or confirm a second ${equip} is on site for the overlap window.`,
-            });
-          }
-        }
-      }
+  for (const [equipment, list] of bookings) {
+    const capacity = equipmentFleet[equipment] ?? (list.some(a => a.quantity > 1) ? undefined : 1);
+    const peak = Math.max(...list.map(a => concurrentAt(list, Date.parse(a.startDate))));
+    if (capacity === undefined || peak > capacity) {
+      findings.push({
+        type: "equipment",
+        severity: "high",
+        activity: list.map(a => a.name).join(" / "),
+        issue: capacity === undefined
+          ? `Confirm capacity for "${equipment}". The schedule needs up to ${peak} unit(s).`
+          : `Up to ${peak} unit(s) of "${equipment}" are needed at the same time. Only ${capacity} are available.`,
+        recommendation: "Confirm equipment availability or revise the overlapped activities before use.",
+      });
     }
   }
 
@@ -269,7 +263,9 @@ Return STRICT JSON:
       if (mentioned.length < 2) return true;
       return mentioned.some((a, i) => mentioned.slice(i + 1).some(b => overlaps(a, b)));
     });
-    const findings = [...deterministicFindings(activities, Object.fromEntries(Object.entries(equipmentFleet).map(([k, v]) => [k.toLowerCase(), Number(v) || 1]))), ...aiFindings];
+    const findings = [...deterministicFindings(activities, Object.fromEntries(Object.entries(equipmentFleet)
+      .filter(([, capacity]) => Number.isSafeInteger(capacity) && capacity >= 0)
+      .map(([name, capacity]) => [normalizeEquipmentName(name), capacity]))), ...aiFindings];
 
     const rank = { high: 0, medium: 1, low: 2 } as Record<string, number>;
     findings.sort((a, b) => (rank[a.severity] ?? 3) - (rank[b.severity] ?? 3));

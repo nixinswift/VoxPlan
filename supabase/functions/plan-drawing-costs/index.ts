@@ -1,3 +1,4 @@
+import { civilTakeoffUnit } from "../_shared/civil-volume.ts";
 import { CIVIL_ESTIMATING_GUIDANCE, CIVIL_SCHEDULING_GUIDANCE } from "../_shared/civil-planning.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
@@ -40,7 +41,7 @@ Deno.serve(async req => {
     const lines = estimates.map(e => {
       const area = Number(e.area) > 0 ? Number(e.area) : Number(e.length) * Number(e.width);
       const volume = Number(e.quantity) * area * Number(e.category === "wall" ? e.height : e.thickness);
-      return { id: e.id, description: e.description, trade: e.discipline === "building" ? e.trade : "concrete", qty: e.discipline === "building" ? Number(e.unit_qty) : e.unit === "ft" ? volume / 27 : volume, uom: e.discipline === "building" ? e.uom : e.unit === "ft" ? "CY" : "m3" };
+      return { id: e.id, description: e.description, trade: e.discipline === "building" ? e.trade : "concrete", qty: e.discipline === "building" ? Number(e.unit_qty) : e.unit === "ft" ? volume / 27 : volume, uom: e.discipline === "building" ? civilTakeoffUnit(e.trade, e.uom || "ea", e.description) : e.unit === "ft" ? "CY" : "m3" };
     });
     const key = Deno.env.get("LOVABLE_API_KEY");
     const batchLines = lines.slice(body.offset, body.offset + 6);

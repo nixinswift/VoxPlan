@@ -1,0 +1,90 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1792806323410,
+      "tag": "0000_drawing_cost_proposals",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793053367214,
+      "tag": "0001_christopher_mechanical_demo",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793053385182,
+      "tag": "0002_fix_demo_seed_membership",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793178404025,
+      "tag": "0003_explicit_task_dependencies",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793178550949,
+      "tag": "0004_atomic_schedule_date_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793178834760,
+      "tag": "0005_validate_explicit_task_dependencies",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793178978130,
+      "tag": "0006_publish_estimate_changes_for_cost_refresh",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793185054314,
+      "tag": "0007_enforce_approved_signup",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793186682574,
+      "tag": "0008_enforce_approved_email_change",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793186868269,
+      "tag": "0009_block_unapproved_existing_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793190089138,
+      "tag": "0010_allow_admin_delete_non_demo_projects",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795517623300,
+      "tag": "0011_protect_individual_practice_projects",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+ALTER TABLE public.estimates ADD COLUMN package text NOT NULL DEFAULT '';

@@ -1,0 +1,1 @@
+ALTER TABLE public.estimates ADD COLUMN area numeric NOT NULL DEFAULT 0;

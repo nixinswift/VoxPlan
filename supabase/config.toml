@@ -1,0 +1,31 @@
+project_id = "aomrjtxkdtziixuqoiei"
+
+[functions.parse-voice-input]
+verify_jwt = false
+
+[functions.ai-scheduling-buddy]
+verify_jwt = false
+
+[functions.analyze-manpower]
+verify_jwt = false
+
+[functions.analyze-fuel-burn]
+verify_jwt = false
+
+[functions.voxpal-realtime]
+verify_jwt = false
+
+[functions.optimize-schedule]
+verify_jwt = false
+
+[functions.estimating-chat]
+verify_jwt = false
+
+[functions.analyze-drawing]
+verify_jwt = false
+
+[functions.query-specs]
+verify_jwt = false
+
+[functions.extract-spec-text]
+verify_jwt = false

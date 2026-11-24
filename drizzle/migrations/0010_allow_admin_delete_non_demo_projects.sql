@@ -1,0 +1,1 @@
+CREATE POLICY "Admins can delete non-demo projects" ON public.projects FOR DELETE TO authenticated USING (is_demo IS NOT TRUE AND private.has_role(auth.uid(), 'admin'::public.app_role));
